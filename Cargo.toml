@@ -12,5 +12,3 @@ codegen-units = 1
 debug = true
 lto = true
 opt-level = 3
-target-cpu = 'native'
-tune-cpu = 'native'

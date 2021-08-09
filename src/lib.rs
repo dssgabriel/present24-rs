@@ -6,7 +6,7 @@ mod encrypt;
 mod decrypt;
 pub mod attack;
 
-type Job = Box<dyn FnMut() + Send + 'static>;
+type Job = Box<dyn FnOnce() + Send + 'static>;
 
 enum Task {
     NewJob(Job),
@@ -14,12 +14,11 @@ enum Task {
 }
 
 struct Worker {
-    id: usize,
     thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Worker {
-    fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Task>>>) -> Self {
+    fn new(receiver: Arc<Mutex<mpsc::Receiver<Task>>>) -> Self {
         let thread = thread::spawn(move || loop {
             let task = receiver
                 .lock()
@@ -28,15 +27,12 @@ impl Worker {
                 .expect("Could not receive the message");
 
             match task {
-                Task::NewJob(mut job) => job(),
+                Task::NewJob(job) => job(),
                 Task::Terminate => break,
             }
         });
 
-        Worker {
-            id,
-            thread: Some(thread),
-        }
+        Worker { thread: Some(thread) }
     }
 }
 
@@ -53,8 +49,8 @@ impl ThreadPool {
         let receiver = Arc::new(Mutex::new(receiver));
 
         let mut workers = Vec::with_capacity(size);
-        for id in 0..size {
-            workers.push(Worker::new(id, Arc::clone(&receiver)));
+        for _ in 0..size {
+            workers.push(Worker::new(Arc::clone(&receiver)));
         }
 
         ThreadPool {
@@ -65,7 +61,7 @@ impl ThreadPool {
 
     pub fn execute<F>(&self, f: F)
     where
-        F: FnMut() + Send + 'static,
+        F: FnOnce() + Send + 'static,
     {
         let job = Box::new(f);
         self.sender.send(Task::NewJob(job)).expect("Failed to send new job");
