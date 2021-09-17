@@ -1,4 +1,4 @@
-use crate::utils::{ Message, RoundKeys };
+use crate::{Message, RoundKeys};
 
 const SBOX_ENCRYPT: [u8; 16] = [
     0x0c, 0x05, 0x06, 0x0b,
@@ -7,6 +7,7 @@ const SBOX_ENCRYPT: [u8; 16] = [
     0x04, 0x07, 0x01, 0x02
 ];
 
+#[inline(always)]
 pub fn sbox_encrypt(byte: u8) -> u8 {
     let hi_nibble = SBOX_ENCRYPT[((byte & 0xf0) >> 4) as usize] << 4;
     let lo_nibble = SBOX_ENCRYPT[(byte & 0x0f) as usize];
@@ -14,6 +15,7 @@ pub fn sbox_encrypt(byte: u8) -> u8 {
     hi_nibble | lo_nibble
 }
 
+#[inline(always)]
 fn pbox_encrypt(m: &Message) -> Message {
     let p: Message = [
         (m[0] & 0x80)      | (m[0] & 0x08) << 3 |
@@ -35,6 +37,7 @@ fn pbox_encrypt(m: &Message) -> Message {
     p
 }
 
+#[inline(always)]
 pub fn present24_encrypt(mut m: Message, rk: RoundKeys) -> Message {
     for i in 0..10 {
         for j in 0..3 {

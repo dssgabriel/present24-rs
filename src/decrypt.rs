@@ -1,4 +1,4 @@
-use crate::utils::{ Message, RoundKeys };
+use crate::{Message, RoundKeys};
 
 const SBOX_DECRYPT: [u8; 16] = [
     0x05, 0x0e, 0x0f, 0x08,
@@ -7,6 +7,7 @@ const SBOX_DECRYPT: [u8; 16] = [
     0x00, 0x07, 0x09, 0x0a
 ];
 
+#[inline(always)]
 fn sbox_decrypt(byte: u8) -> u8 {
     let hi_nibble = SBOX_DECRYPT[((byte & 0xf0) >> 4) as usize] << 4;
     let lo_nibble = SBOX_DECRYPT[(byte & 0x0f) as usize];
@@ -14,6 +15,7 @@ fn sbox_decrypt(byte: u8) -> u8 {
     hi_nibble | lo_nibble
 }
 
+#[inline(always)]
 fn pbox_decrypt(m: &Message) -> Message {
     let p: Message = [
         (m[0] & 0x80)      | (m[0] & 0x02) << 5 |
@@ -35,6 +37,7 @@ fn pbox_decrypt(m: &Message) -> Message {
     p
 }
 
+#[inline(always)]
 pub fn present24_decrypt(mut m: Message, rk: RoundKeys) -> Message {
     for i in 0..3 {
         m[i] ^= rk[10][i];

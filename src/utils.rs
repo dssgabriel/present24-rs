@@ -1,22 +1,8 @@
-pub type Message = [u8; 3];
-pub type Key = [u8; 3];
-pub type RoundKeys = [[u8; 3]; 11];
-pub type Register = [u8; 10];
+use crate::{Key, RoundKeys, Register};
 
+#[inline(always)]
 pub fn generate_round_keys(k: Key) -> RoundKeys {
-    let mut rk: RoundKeys = [
-        [0x00, 0x00, 0x00],
-        [0x00, 0x00, 0x00],
-        [0x00, 0x00, 0x00],
-        [0x00, 0x00, 0x00],
-        [0x00, 0x00, 0x00],
-        [0x00, 0x00, 0x00],
-        [0x00, 0x00, 0x00],
-        [0x00, 0x00, 0x00],
-        [0x00, 0x00, 0x00],
-        [0x00, 0x00, 0x00],
-        [0x00, 0x00, 0x00],
-    ];
+    let mut rk: RoundKeys = [[0x00; 3]; 11];
 
     let mut reg: Register = [
         k[0], k[1], k[2], 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
@@ -53,4 +39,9 @@ pub fn generate_round_keys(k: Key) -> RoundKeys {
     }
 
     rk
+}
+
+#[inline]
+pub fn print_cracked(ke: &u64, kd: &u64) {
+    println!("  [CRACKED]: (k1, k2) = ({:06x}, {:06x})", ke, kd);
 }

@@ -1,169 +1,122 @@
 use std::cmp::Ordering;
-use std::sync::{Arc, mpsc};
-use std::thread;
+use std::sync::Arc;
 use std::time::Instant;
+use crossbeam_channel;
+use threadpool::ThreadPool;
+use crate::{Message, encrypt, decrypt, sort, utils};
 
-// use crate::ThreadPool;
-use crate::utils::{ Message, Key, RoundKeys };
-
-const DIC_SIZE: usize = 0xffffff;
+const HTBL_SIZE: usize = 0xffffff;
 const MSG_MASK: u64 = 0xffffff;
-const MASK_K64: u64 = 0xffffff000000;
+const KEY_MASK: u64 = 0xffffff000000;
 
-struct Dictionaries {
-    enc: Vec<u64>,
-    dec: Vec<u64>,
+struct HashTables {
+    encrypt: Vec<u64>,
+    decrypt: Vec<u64>
 }
 
-impl Dictionaries {
-    fn new() -> Self {
-        Dictionaries {
-            enc: Vec::with_capacity(DIC_SIZE),
-            dec: Vec::with_capacity(DIC_SIZE),
+impl HashTables {
+    fn new(size: usize) -> Self {
+        HashTables {
+            encrypt: Vec::with_capacity(size),
+            decrypt: Vec::with_capacity(size),
         }
     }
 
-    fn generate(
-        start: &usize,
-        end: &usize,
-        m: &Message,
-        c: &Message
-    ) -> Self {
-        let mut enc = Vec::with_capacity(end - start);
-        let mut dec = Vec::with_capacity(end - start);
+    #[inline(always)]
+    fn generate(start: usize, end: usize, m: &Message, c: &Message) -> Self {
+        let mut hash_tables = Self::new(end - start);
 
-        for i in *start..*end {
-            let k: Key = [
+        for i in start..end {
+            let k = [
                 ((i & 0xff0000) >> 16) as u8,
                 ((i & 0xff00) >> 8) as u8,
                  (i & 0xff) as u8
             ];
 
-            let mut enc_entry = ((k[0] as u64) << 16) | ((k[1] as u64) << 8) | (k[2] as u64);
-            let mut dec_entry = ((k[0] as u64) << 16) | ((k[1] as u64) << 8) | (k[2] as u64);
+            let entry = (((k[0] as u64) << 16) | ((k[1] as u64) << 8) | (k[2] as u64)) << 24;
 
-            enc_entry <<= 24;
-            dec_entry <<= 24;
+            let rk = utils::generate_round_keys(k);
 
-            let rk: RoundKeys = crate::utils::generate_round_keys(k);
+            let e = encrypt::present24_encrypt(*m, rk);
+            let d = decrypt::present24_decrypt(*c, rk);
 
-            let enc_res = crate::encrypt::present24_encrypt(*m, rk);
-            let dec_res = crate::decrypt::present24_decrypt(*c, rk);
+            let e = entry | (((e[0] as u64) << 16) | ((e[1] as u64) << 8) | (e[2] as u64));
+            let d = entry | (((d[0] as u64) << 16) | ((d[1] as u64) << 8) | (d[2] as u64));
 
-            enc_entry |= ((enc_res[0] as u64) << 16) | ((enc_res[1] as u64) << 8) | (enc_res[2] as u64);
-            dec_entry |= ((dec_res[0] as u64) << 16) | ((dec_res[1] as u64) << 8) | (dec_res[2] as u64);
-
-            enc.push(enc_entry);
-            dec.push(dec_entry);
+            hash_tables.encrypt.push(e);
+            hash_tables.decrypt.push(d);
         }
 
-        Dictionaries { enc, dec }
+        hash_tables
     }
 
     fn sort(&mut self) {
-        let mut tmp = vec![0; DIC_SIZE];
+        let len = self.encrypt.len();
+        let mut tmp = vec![0; len];
 
-        radix_sort(&mut self.enc, &mut tmp, DIC_SIZE);
-        radix_sort(&mut self.dec, &mut tmp, DIC_SIZE);
+        sort::radix_sort(&mut self.encrypt, &mut tmp);
+        sort::radix_sort(&mut self.decrypt, &mut tmp);
     }
 
-    fn attack(&self, start: &usize, end: &usize, m: &Message, c: &Message) {
-        for i in *start..*end {
-            let index = bin_search(&self.dec, &self.enc[i], &m, &c);
+    #[inline(always)]
+    fn attack(&self, start: usize, end: usize, m: &Message, c: &Message) {
+        for i in start..end {
+            let index = binary_search(&self.decrypt, &self.encrypt[i], &m, &c);
 
             match index {
-                Some(j) => check_collision(&self.enc[i], &self.dec[j], &m, &c),
+                Some(j) => check_collision(&self.encrypt[i], &self.decrypt[j], &m, &c),
                 None => continue,
             }
         }
     }
 }
 
-fn radix_sort_pass(src: &mut [u64], dst: &mut [u64], n: usize, shift: usize) {
-    let mut index = [0; 256];
-    let mut next_index = 0;
+#[inline(always)]
+fn check_collision(e: &u64, d: &u64, m: &Message, c: &Message) {
+    let ke = e & KEY_MASK;
+    let kd = d & KEY_MASK;
 
-    for i in 0..n {
-        index[((src[i] >> shift) & 0xff) as usize] += 1;
-    }
-
-    for i in 0..256 {
-        let count = index[i];
-        index[i] = next_index;
-        next_index += count;
-    }
-
-    for i in 0..n {
-        let j = ((src[i] >> shift) & 0xff) as usize;
-        dst[index[j]] = src[i];
-        index[j] += 1; // Increase by one to get the next position.
-    }
-}
-
-fn radix_sort(vec: &mut [u64], tmp: &mut [u64], n: usize) {
-    radix_sort_pass(vec, tmp, n, 0);
-    println!("pass 1");
-    radix_sort_pass(tmp, vec, n, 8);
-    println!("pass 2");
-    radix_sort_pass(vec, tmp, n, 16);
-    println!("pass 3");
-
-    for i in 0..n {
-        vec[i] = tmp[i];
-    }
-}
-
-fn check_collision(enc: &u64, dec: &u64, m: &Message, c: &Message) {
-    let kenc = enc & MASK_K64;
-    let kdec = dec & MASK_K64;
-
-    let k1: Key = [(kenc >> 40) as u8, (kenc >> 32) as u8, (kenc >> 24) as u8];
-    let k2: Key = [(kdec >> 40) as u8, (kdec >> 32) as u8, (kdec >> 24) as u8];
+    let k1 = [(ke >> 40) as u8, (ke >> 32) as u8, (ke >> 24) as u8];
+    let k2 = [(kd >> 40) as u8, (kd >> 32) as u8, (kd >> 24) as u8];
 
     let rk1 = crate::utils::generate_round_keys(k1);
     let rk2 = crate::utils::generate_round_keys(k2);
 
-    let renc = crate::encrypt::present24_encrypt(*m, rk1);
-    let rdec = crate::decrypt::present24_decrypt(*c, rk2);
+    let re = crate::encrypt::present24_encrypt(*m, rk1);
+    let rd = crate::decrypt::present24_decrypt(*c, rk2);
 
-    if (renc[0] == rdec[0]) && (renc[1] == rdec[1]) && (renc[2] == rdec[2]) {
-        println!("Found matching keys.\n    k1: {:06x} | k2: {:06x}",
-            (enc & MASK_K64) >> 24, (dec & MASK_K64) >> 24
-        );
+    if (re[0] == rd[0]) && (re[1] == rd[1]) && (re[2] == rd[2]) {
+        utils::print_cracked(&((e & KEY_MASK) >> 24), &((d & KEY_MASK) >> 24));
     }
 }
 
-fn bin_search(
-    dic: &[u64],
-    target: &u64,
-    m: &Message,
-    c: &Message
-) -> Option<usize> {
+#[inline(always)]
+fn binary_search(hash_table: &[u64], target: &u64, m: &Message, c: &Message) -> Option<usize> {
     let mut lo = 0;
-    let mut hi = dic.len();
+    let mut hi = hash_table.len();
 
     while lo < hi {
         let mid = (hi + lo) / 2;
         let t = target & MSG_MASK;
 
-        match t.cmp(&(dic[mid as usize] & MSG_MASK)) {
+        match t.cmp(&(hash_table[mid as usize] & MSG_MASK)) {
             Ordering::Equal => {
                 let mut cur = mid - 1;
-                while (cur >= lo) && (t == (dic[cur as usize] & MSG_MASK)) {
-                    check_collision(target, &dic[cur as usize], m, c);
+                while (cur >= lo) && (t == (hash_table[cur as usize] & MSG_MASK)) {
+                    check_collision(target, &hash_table[cur as usize], m, c);
                     cur -= 1;
                 }
 
                 cur = mid + 1;
-                while (cur < hi) && (t == (dic[cur as usize] & MSG_MASK)) {
-                    check_collision(target, &dic[cur as usize], m, c);
+                while (cur < hi) && (t == (hash_table[cur as usize] & MSG_MASK)) {
+                    check_collision(target, &hash_table[cur as usize], m, c);
                     cur += 1;
                 }
 
                 return Some(mid as usize);
             },
             Ordering::Greater => lo = mid + 1,
-            Ordering::Less => hi = mid - 1,
+            Ordering::Less => hi = mid,
         }
     }
 
@@ -177,66 +130,47 @@ pub fn present24_attack(
     c2: Message,
     nb_threads: usize
 ) {
-    let mut d = Dictionaries::new();
-    let (tx, rx) = mpsc::channel();
-    let mut handles = vec![];
+    let pool = ThreadPool::new(nb_threads);
+    let (tx, rx) = crossbeam_channel::bounded(nb_threads);
+    let mut hash_tables = HashTables::new(HTBL_SIZE);
 
-    // print!("Generating dictionaries... ");
-    let start = Instant::now();
-
+    let time = Instant::now();
     for i in 0..nb_threads {
-        let start = i * (DIC_SIZE / nb_threads);
-        let end = (i + 1) * (DIC_SIZE / nb_threads);
-        println!("start: {}\tend: {}\tframe: {}\top: {}", start, end, end - start, DIC_SIZE / nb_threads);
+        let start = i * (HTBL_SIZE / nb_threads);
+        let end = (i + 1) * (HTBL_SIZE / nb_threads);
 
         let ty = tx.clone();
-        let handle = thread::spawn(move || {
-            let d = Dictionaries::generate(&start, &end, &m1, &c1);
+        pool.execute(move || {
+            let h = HashTables::generate(start, end, &m1, &c1);
 
-            ty.send(d).expect("Failed to send dictionaries");
+            ty.send(h).expect("Failed to send hash table through channel");
         });
-        handles.push(handle);
     }
-
-    for handle in handles {
-        handle.join().unwrap();
-    }
+    pool.join();
 
     for _ in 0..nb_threads {
         let mut received = rx.recv().unwrap();
-        d.enc.append(&mut received.enc);
-        d.dec.append(&mut received.dec);
+        hash_tables.encrypt.append(&mut received.encrypt);
+        hash_tables.decrypt.append(&mut received.decrypt);
     }
+    let duration = time.elapsed();
+    println!("Generated {} hashes in {:?}", HTBL_SIZE * 2, duration);
 
-    let duration = start.elapsed();
-    println!("done in {:?}", duration);
+    let time = Instant::now();
+    hash_tables.sort();
+    let duration = time.elapsed();
+    println!("Sorted hash tables in {:?}", duration);
 
-    // print!("Sorting dictionaries... ");
-    let start = Instant::now();
-    d.sort();
-    let duration = start.elapsed();
-    println!("done in {:?}", duration);
-
-    // println!("Attacking dictionaries... ");
-    let mut handles = vec![];
-    let d = Arc::new(d);
-    let start = Instant::now();
-
+    println!("Attacking hash tables...");
+    let hash_tables = Arc::new(hash_tables);
     for i in 0..nb_threads {
-        let start = i * (DIC_SIZE / nb_threads);
-        let end = (i + 1) * (DIC_SIZE / nb_threads);
+        let start = i * (HTBL_SIZE / nb_threads);
+        let end = (i + 1) * (HTBL_SIZE / nb_threads);
 
-        let dx = Arc::clone(&d);
-        let handle = thread::spawn(move || {
-            dx.attack(&start, &end, &m2, &c2);
+        let h = Arc::clone(&hash_tables);
+        pool.execute(move || {
+            h.attack(start, end, &m2, &c2);
         });
-        handles.push(handle);
     }
-
-    for handle in handles {
-        handle.join().unwrap();
-    }
-
-    let duration = start.elapsed();
-    println!("\nAttack done in {:?}", duration);
+    pool.join();
 }
