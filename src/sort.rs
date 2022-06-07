@@ -1,4 +1,3 @@
-#[inline(always)]
 pub fn radix_sort(vec: &mut Vec<u64>, tmp: &mut [u64]) {
     let len = vec.len();
 
@@ -11,13 +10,12 @@ pub fn radix_sort(vec: &mut Vec<u64>, tmp: &mut [u64]) {
     }
 }
 
-#[inline(always)]
 fn radix_sort_pass(src: &mut [u64], dst: &mut [u64], len: &usize, shift: usize) {
-    let mut index = [0usize; 256];
+    let mut index = [0_usize; 256];
     let mut next_index = 0;
 
     for i in 0..*len {
-        let j: usize = ((src[i] >> shift) & 0xff) as usize;
+        let j = ((src[i] >> shift) & 0xff) as usize;
         index[j] += 1;
     }
 

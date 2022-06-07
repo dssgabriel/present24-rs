@@ -1,2 +1,7 @@
-/target
+# Directories to ignore
+target/
+.cargo/
+
+# Files to ignore
+Cargo.lock
 config.lua
